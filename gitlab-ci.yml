@@ -1,0 +1,38 @@
+```yaml
+stages: [build, deploy]
+
+variables:
+  DOCKER_DRIVER: overlay2
+
+build:
+  stage: build
+  image: docker:24.0.5
+  services: [docker:24.0.5-dind]
+  script:
+    - echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USER" --password-stdin
+    - docker build -t "$REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" -t "$REGISTRY_IMAGE:latest" .
+    - docker push "$REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$REGISTRY_IMAGE:latest"
+  rules:
+    - if: $CI_COMMIT_BRANCH
+
+deploy:
+  stage: deploy
+  image: alpine:3.20
+  needs: [build]
+  before_script:
+    - apk add --no-cache openssh-client docker-cli
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - echo "$DEPLOY_SSH_KEY" > ~/.ssh/id_rsa && chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+  script:
+    - |
+      ssh -i ~/.ssh/id_rsa "$DEPLOY_USER@$DEPLOY_HOST" '
+        docker pull "$REGISTRY_IMAGE:latest" &&         docker stop "$DEPLOY_APP_NAME" || true &&         docker rm "$DEPLOY_APP_NAME" || true &&         docker run -d --name "$DEPLOY_APP_NAME" -p "$DEPLOY_PORT:80" "$REGISTRY_IMAGE:latest"
+      '
+  environment:
+    name: staging
+    url: http://$DEPLOY_HOST:$DEPLOY_PORT/
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+```
